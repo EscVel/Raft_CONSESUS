@@ -18,9 +18,23 @@ type Printer struct {
 
 type Filament struct {
 	ID          string  `json:"id"`
-	Type        string  `json:"type"` // e.g., PLA, PETG, ABS, TPU
+	Type        string  `json:"type"`
 	Color       string  `json:"color"`
-	WeightGrams float64 `json:"weight_grams"` // Remaining weight
+	WeightGrams float64 `json:"weight_grams"`
+}
+
+type PrintJob struct {
+	ID          string  `json:"id"`
+	FilePath    string  `json:"file_path"`
+	GramsNeeded float64 `json:"grams_needed"`
+	PrinterID   string  `json:"printer_id"`
+	FilamentID  string  `json:"filament_id"`
+	Status      string  `json:"status"`
+}
+
+type UpdateJobStatusData struct {
+	JobID     string `json:"job_id"`
+	NewStatus string `json:"new_status"`
 }
 
 type command struct {
@@ -30,11 +44,10 @@ type command struct {
 
 // --- FSM Struct and Methods ---
 
-// fsmData holds all the data for our state machine.
-// We use this helper struct to make snapshotting easier.
 type fsmData struct {
 	Printers  map[string]Printer
 	Filaments map[string]Filament
+	PrintJobs map[string]PrintJob
 }
 
 type fsm struct {
@@ -47,6 +60,7 @@ func newFSM() *fsm {
 		data: fsmData{
 			Printers:  make(map[string]Printer),
 			Filaments: make(map[string]Filament),
+			PrintJobs: make(map[string]PrintJob),
 		},
 	}
 }
@@ -77,21 +91,90 @@ func (f *fsm) Apply(log *raft.Log) interface{} {
 		f.data.Filaments[filament.ID] = filament
 		return nil
 
+	case "add_print_job":
+		var job PrintJob
+		if err := json.Unmarshal(cmd.Data, &job); err != nil {
+			return fmt.Errorf("failed to unmarshal print job data: %w", err)
+		}
+
+		if _, ok := f.data.Printers[job.PrinterID]; !ok {
+			return fmt.Errorf("printer with ID %s not found", job.PrinterID)
+		}
+		filament, ok := f.data.Filaments[job.FilamentID]
+		if !ok {
+			return fmt.Errorf("filament with ID %s not found", job.FilamentID)
+		}
+
+		var reservedWeight float64
+		for _, existingJob := range f.data.PrintJobs {
+			if existingJob.FilamentID == job.FilamentID && (existingJob.Status == "Queued" || existingJob.Status == "Running") {
+				reservedWeight += existingJob.GramsNeeded
+			}
+		}
+		availableWeight := filament.WeightGrams - reservedWeight
+		if availableWeight < job.GramsNeeded {
+			return fmt.Errorf("insufficient filament: required %.2fg, available %.2fg (%.2fg total - %.2fg reserved)",
+				job.GramsNeeded, availableWeight, filament.WeightGrams, reservedWeight)
+		}
+
+		job.Status = "Queued"
+		f.data.PrintJobs[job.ID] = job
+		return nil
+
+	case "update_job_status":
+		var updateData UpdateJobStatusData
+		if err := json.Unmarshal(cmd.Data, &updateData); err != nil {
+			return fmt.Errorf("failed to unmarshal update job data: %w", err)
+		}
+
+		job, ok := f.data.PrintJobs[updateData.JobID]
+		if !ok {
+			return fmt.Errorf("print job with ID %s not found", updateData.JobID)
+		}
+
+		currentStatus := job.Status
+		newStatus := updateData.NewStatus
+		isValidTransition := false
+
+		switch newStatus {
+		case "Running":
+			if currentStatus == "Queued" {
+				isValidTransition = true
+			}
+		case "Done":
+			if currentStatus == "Running" {
+				isValidTransition = true
+				filament := f.data.Filaments[job.FilamentID]
+				filament.WeightGrams -= job.GramsNeeded
+				f.data.Filaments[job.FilamentID] = filament
+			}
+		case "Canceled":
+			if currentStatus == "Queued" || currentStatus == "Running" {
+				isValidTransition = true
+			}
+		}
+
+		if !isValidTransition {
+			return fmt.Errorf("invalid status transition from '%s' to '%s'", currentStatus, newStatus)
+		}
+
+		job.Status = newStatus
+		f.data.PrintJobs[job.ID] = job
+		return nil
+
 	default:
 		return fmt.Errorf("unrecognized command op: %s", cmd.Op)
 	}
 }
 
-// --- Snapshot and Restore Methods (Updated for fsmData) ---
-
+// --- Snapshot and Restore Methods ---
 func (f *fsm) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	// It's important to clone the data struct for safety.
 	clone := fsmData{
 		Printers:  make(map[string]Printer),
 		Filaments: make(map[string]Filament),
+		PrintJobs: make(map[string]PrintJob),
 	}
 	for k, v := range f.data.Printers {
 		clone.Printers[k] = v
@@ -99,18 +182,18 @@ func (f *fsm) Snapshot() (raft.FSMSnapshot, error) {
 	for k, v := range f.data.Filaments {
 		clone.Filaments[k] = v
 	}
-
+	for k, v := range f.data.PrintJobs {
+		clone.PrintJobs[k] = v
+	}
 	return &fsmSnapshot{data: clone}, nil
 }
 
 func (f *fsm) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
-
 	var data fsmData
 	if err := json.NewDecoder(rc).Decode(&data); err != nil {
 		return err
 	}
-
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.data = data

@@ -94,15 +94,15 @@ func (s *Store) Join(nodeID, addr string) error {
 	return nil
 }
 
-func (s *Store) Apply(cmdBytes []byte) error {
+func (s *Store) Apply(cmdBytes []byte) (interface{}, error) {
 	if s.raft.State() != raft.Leader {
-		return fmt.Errorf("not the leader, cannot apply command")
+		return nil, fmt.Errorf("not the leader, cannot apply command")
 	}
 	future := s.raft.Apply(cmdBytes, 500*time.Millisecond)
 	if err := future.Error(); err != nil {
-		return fmt.Errorf("failed to apply command: %w", err)
+		return nil, fmt.Errorf("failed to apply command: %w", err)
 	}
-	return nil
+	return future.Response(), nil
 }
 
 func (s *Store) GetPrinters() []Printer {
@@ -123,4 +123,14 @@ func (s *Store) GetFilaments() []Filament {
 		filaments = append(filaments, f)
 	}
 	return filaments
+}
+
+func (s *Store) GetPrintJobs() []PrintJob {
+	s.fsm.mu.Lock()
+	defer s.fsm.mu.Unlock()
+	jobs := make([]PrintJob, 0, len(s.fsm.data.PrintJobs))
+	for _, j := range s.fsm.data.PrintJobs {
+		jobs = append(jobs, j)
+	}
+	return jobs
 }
