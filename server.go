@@ -8,16 +8,14 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/hashicorp/raft" // Make sure raft is imported if not already
+	"github.com/hashicorp/raft"
 )
 
-// Server is the HTTP server for the Raft node.
 type Server struct {
 	store    *Store
 	httpAddr string
 }
 
-// NewServer creates a new server instance.
 func NewServer(addr string, store *Store) *Server {
 	return &Server{
 		store:    store,
@@ -25,18 +23,17 @@ func NewServer(addr string, store *Store) *Server {
 	}
 }
 
-// Start starts the HTTP server.
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/join", s.handleJoin)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/printers", s.handlePrinters)
+	mux.HandleFunc("/filaments", s.handleFilaments)
 
 	log.Printf("HTTP server listening on %s\n", s.httpAddr)
 	return http.ListenAndServe(s.httpAddr, mux)
 }
 
-// handlePrinters routes requests for the /printers endpoint based on the HTTP method.
 func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -48,7 +45,6 @@ func (s *Server) handlePrinters(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetPrinters handles GET requests to list all printers.
 func (s *Server) handleGetPrinters(w http.ResponseWriter, r *http.Request) {
 	printers := s.store.GetPrinters()
 	w.Header().Set("Content-Type", "application/json")
@@ -57,18 +53,13 @@ func (s *Server) handleGetPrinters(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAddPrinter handles POST requests to add a new printer.
-// If the node is not the leader, it redirects the request.
 func (s *Server) handleAddPrinter(w http.ResponseWriter, r *http.Request) {
 	if s.store.raft.State() != raft.Leader {
-		// Get the leader's Raft address.
 		leaderRaftAddr := string(s.store.raft.Leader())
 		if leaderRaftAddr == "" {
 			http.Error(w, "No leader found", http.StatusServiceUnavailable)
 			return
 		}
-
-		// Derive the HTTP address from the Raft address (Raft Port + 1000).
 		host, raftPortStr, err := net.SplitHostPort(leaderRaftAddr)
 		if err != nil {
 			http.Error(w, "Failed to parse leader address", http.StatusInternalServerError)
@@ -81,13 +72,11 @@ func (s *Server) handleAddPrinter(w http.ResponseWriter, r *http.Request) {
 		}
 		httpPort := raftPort + 1000
 		redirectURL := fmt.Sprintf("http://%s:%d%s", host, httpPort, r.URL.Path)
-
 		log.Printf("I am not the leader. Redirecting request to leader at %s", redirectURL)
 		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 		return
 	}
 
-	// If this node is the leader, process the request.
 	var p Printer
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		http.Error(w, "Failed to decode printer from request", http.StatusBadRequest)
@@ -114,7 +103,75 @@ func (s *Server) handleAddPrinter(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleJoin is the HTTP handler for joining a node to the cluster.
+func (s *Server) handleFilaments(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetFilaments(w, r)
+	case http.MethodPost:
+		s.handleAddFilament(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleGetFilaments(w http.ResponseWriter, r *http.Request) {
+	filaments := s.store.GetFilaments()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(filaments); err != nil {
+		http.Error(w, "Failed to encode filaments", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleAddFilament(w http.ResponseWriter, r *http.Request) {
+	if s.store.raft.State() != raft.Leader {
+		leaderRaftAddr := string(s.store.raft.Leader())
+		if leaderRaftAddr == "" {
+			http.Error(w, "No leader found", http.StatusServiceUnavailable)
+			return
+		}
+		host, raftPortStr, err := net.SplitHostPort(leaderRaftAddr)
+		if err != nil {
+			http.Error(w, "Failed to parse leader address", http.StatusInternalServerError)
+			return
+		}
+		raftPort, err := strconv.Atoi(raftPortStr)
+		if err != nil {
+			http.Error(w, "Failed to parse leader port", http.StatusInternalServerError)
+			return
+		}
+		httpPort := raftPort + 1000
+		redirectURL := fmt.Sprintf("http://%s:%d%s", host, httpPort, r.URL.Path)
+		log.Printf("I am not the leader. Redirecting request to leader at %s", redirectURL)
+		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+		return
+	}
+
+	var f Filament
+	if err := json.NewDecoder(r.Body).Decode(&f); err != nil {
+		http.Error(w, "Failed to decode filament from request", http.StatusBadRequest)
+		return
+	}
+	cmdData, err := json.Marshal(f)
+	if err != nil {
+		http.Error(w, "Failed to marshal filament data", http.StatusInternalServerError)
+		return
+	}
+	cmd := command{
+		Op:   "add_filament",
+		Data: cmdData,
+	}
+	cmdBytes, err := json.Marshal(cmd)
+	if err != nil {
+		http.Error(w, "Failed to marshal command", http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.Apply(cmdBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -137,7 +194,6 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleStatus is the HTTP handler for checking the node's Raft status.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	status := map[string]string{

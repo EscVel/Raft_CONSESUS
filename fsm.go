@@ -9,34 +9,48 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-// Printer represents a 3D printer in the system, as per the project spec.
+// --- Struct Definitions ---
+
 type Printer struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// command represents a command that will be sent through the Raft log.
-// Using json.RawMessage lets us handle different data types for different operations.
+type Filament struct {
+	ID          string  `json:"id"`
+	Type        string  `json:"type"` // e.g., PLA, PETG, ABS, TPU
+	Color       string  `json:"color"`
+	WeightGrams float64 `json:"weight_grams"` // Remaining weight
+}
+
 type command struct {
 	Op   string          `json:"op,omitempty"`
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
-// fsm is the Finite State Machine. It now stores a map of Printers.
-type fsm struct {
-	mu       sync.Mutex
-	printers map[string]Printer // Keyed by Printer ID
+// --- FSM Struct and Methods ---
+
+// fsmData holds all the data for our state machine.
+// We use this helper struct to make snapshotting easier.
+type fsmData struct {
+	Printers  map[string]Printer
+	Filaments map[string]Filament
 }
 
-// newFSM creates a new, empty FSM.
+type fsm struct {
+	mu   sync.Mutex
+	data fsmData
+}
+
 func newFSM() *fsm {
 	return &fsm{
-		printers: make(map[string]Printer),
+		data: fsmData{
+			Printers:  make(map[string]Printer),
+			Filaments: make(map[string]Filament),
+		},
 	}
 }
 
-// Apply is where all state changes happen. It's called after a command
-// has been committed to the Raft log.
 func (f *fsm) Apply(log *raft.Log) interface{} {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -52,49 +66,64 @@ func (f *fsm) Apply(log *raft.Log) interface{} {
 		if err := json.Unmarshal(cmd.Data, &p); err != nil {
 			return fmt.Errorf("failed to unmarshal printer data: %w", err)
 		}
-		f.printers[p.ID] = p
+		f.data.Printers[p.ID] = p
 		return nil
+
+	case "add_filament":
+		var filament Filament
+		if err := json.Unmarshal(cmd.Data, &filament); err != nil {
+			return fmt.Errorf("failed to unmarshal filament data: %w", err)
+		}
+		f.data.Filaments[filament.ID] = filament
+		return nil
+
 	default:
 		return fmt.Errorf("unrecognized command op: %s", cmd.Op)
 	}
 }
 
-// Snapshot is called by Raft to create a snapshot of the current state.
+// --- Snapshot and Restore Methods (Updated for fsmData) ---
+
 func (f *fsm) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	clone := make(map[string]Printer)
-	for k, v := range f.printers {
-		clone[k] = v
+	// It's important to clone the data struct for safety.
+	clone := fsmData{
+		Printers:  make(map[string]Printer),
+		Filaments: make(map[string]Filament),
+	}
+	for k, v := range f.data.Printers {
+		clone.Printers[k] = v
+	}
+	for k, v := range f.data.Filaments {
+		clone.Filaments[k] = v
 	}
 
-	return &fsmSnapshot{printers: clone}, nil
+	return &fsmSnapshot{data: clone}, nil
 }
 
-// Restore is called by Raft to restore the FSM from a snapshot.
 func (f *fsm) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
 
-	var data map[string]Printer
+	var data fsmData
 	if err := json.NewDecoder(rc).Decode(&data); err != nil {
 		return err
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.printers = data
+	f.data = data
 	return nil
 }
 
-// fsmSnapshot is the struct that Raft uses to persist a snapshot.
 type fsmSnapshot struct {
-	printers map[string]Printer
+	data fsmData
 }
 
 func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
 	err := func() error {
-		if err := json.NewEncoder(sink).Encode(s.printers); err != nil {
+		if err := json.NewEncoder(sink).Encode(s.data); err != nil {
 			return err
 		}
 		return nil

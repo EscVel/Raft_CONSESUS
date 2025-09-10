@@ -19,6 +19,7 @@ func main() {
 	}
 
 	store := NewStore(*nodeID, *raftAddr, *dataDir)
+
 	if err := store.Open(*bootstrap); err != nil {
 		log.Fatalf("failed to open store: %s", err)
 	}
@@ -27,6 +28,4 @@ func main() {
 	if err := server.Start(); err != nil {
 		log.Fatalf("failed to start server: %s", err)
 	}
-
-	log.Println("Raft3D node started successfully")
 }

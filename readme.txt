@@ -12,6 +12,23 @@ cmd /c 'curl.exe -X POST -H "Content-Type: application/json" http://127.0.0.1:80
 
 curl http://127.0.0.1:8002/status
 
+
+Printers:
+cmd /c 'curl.exe -L -X POST -H "Content-Type: application/json" http://127.0.0.1:8001/printers -d "{\"id\": \"p2\", \"name\": \"testing\"}"'
 cmd /c 'curl.exe http://127.0.0.1:8001/printers'
 
-cmd /c 'curl.exe -L -X POST -H "Content-Type: application/json" http://127.0.0.1:8001/printers -d "{\"id\": \"p2\", \"name\": \"testing\"}"'
+
+Fillaments:
+cmd /c 'curl.exe -L -X POST -H "Content-Type: application/json" http://127.0.0.1:8003/filaments -d "{\"id\": \"f1\", \"type\": \"PLA\", \"color\": \"Blue\", \"weight_grams\": 1000}"'
+cmd /c 'curl.exe http://127.0.0.1:8002/filaments'
+
+
+
+
+
+
+
+
+dev notes:
+tag:
+    v1-stable = leader election working

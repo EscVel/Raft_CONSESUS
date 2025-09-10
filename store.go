@@ -16,8 +16,9 @@ type Store struct {
 	NodeID   string
 	RaftAddr string
 	DataDir  string
-	raft     *raft.Raft
-	fsm      *fsm
+
+	raft *raft.Raft
+	fsm  *fsm
 }
 
 func NewStore(nodeID, raftAddr, dataDir string) *Store {
@@ -104,13 +105,22 @@ func (s *Store) Apply(cmdBytes []byte) error {
 	return nil
 }
 
-// GetPrinters returns a slice of all printers in the FSM.
 func (s *Store) GetPrinters() []Printer {
 	s.fsm.mu.Lock()
 	defer s.fsm.mu.Unlock()
-	printers := make([]Printer, 0, len(s.fsm.printers))
-	for _, p := range s.fsm.printers {
+	printers := make([]Printer, 0, len(s.fsm.data.Printers))
+	for _, p := range s.fsm.data.Printers {
 		printers = append(printers, p)
 	}
 	return printers
+}
+
+func (s *Store) GetFilaments() []Filament {
+	s.fsm.mu.Lock()
+	defer s.fsm.mu.Unlock()
+	filaments := make([]Filament, 0, len(s.fsm.data.Filaments))
+	for _, f := range s.fsm.data.Filaments {
+		filaments = append(filaments, f)
+	}
+	return filaments
 }
