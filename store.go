@@ -12,17 +12,14 @@ import (
 	boltdb "github.com/hashicorp/raft-boltdb"
 )
 
-// Store is a wrapper around the Raft node.
 type Store struct {
 	NodeID   string
 	RaftAddr string
 	DataDir  string
-
-	raft *raft.Raft // The consensus mechanism
-	fsm  *fsm       // The state machine
+	raft     *raft.Raft
+	fsm      *fsm
 }
 
-// NewStore creates a new Store.
 func NewStore(nodeID, raftAddr, dataDir string) *Store {
 	return &Store{
 		NodeID:   nodeID,
@@ -32,16 +29,13 @@ func NewStore(nodeID, raftAddr, dataDir string) *Store {
 	}
 }
 
-// Open initializes the store, including the Raft node.
 func (s *Store) Open(bootstrap bool) error {
 	nodeDataDir := filepath.Join(s.DataDir, s.NodeID)
 	if err := os.MkdirAll(nodeDataDir, 0700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
-
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(s.NodeID)
-
 	addr, err := net.ResolveTCPAddr("tcp", s.RaftAddr)
 	if err != nil {
 		return err
@@ -50,7 +44,6 @@ func (s *Store) Open(bootstrap bool) error {
 	if err != nil {
 		return err
 	}
-
 	logStore, err := boltdb.NewBoltStore(filepath.Join(nodeDataDir, "raft-log.db"))
 	if err != nil {
 		return err
@@ -59,18 +52,15 @@ func (s *Store) Open(bootstrap bool) error {
 	if err != nil {
 		return err
 	}
-
 	snapshots, err := raft.NewFileSnapshotStore(nodeDataDir, 2, os.Stderr)
 	if err != nil {
 		return err
 	}
-
 	r, err := raft.NewRaft(config, s.fsm, logStore, stableStore, snapshots, transport)
 	if err != nil {
 		return err
 	}
 	s.raft = r
-
 	if bootstrap {
 		log.Println("Bootstrapping the cluster...")
 		configuration := raft.Configuration{
@@ -89,7 +79,6 @@ func (s *Store) Open(bootstrap bool) error {
 	return nil
 }
 
-// Join adds a new node to the cluster.
 func (s *Store) Join(nodeID, addr string) error {
 	if s.raft.State() != raft.Leader {
 		return fmt.Errorf("not the leader, cannot join")
@@ -102,4 +91,26 @@ func (s *Store) Join(nodeID, addr string) error {
 	}
 	log.Printf("Node %s at %s joined successfully", nodeID, addr)
 	return nil
+}
+
+func (s *Store) Apply(cmdBytes []byte) error {
+	if s.raft.State() != raft.Leader {
+		return fmt.Errorf("not the leader, cannot apply command")
+	}
+	future := s.raft.Apply(cmdBytes, 500*time.Millisecond)
+	if err := future.Error(); err != nil {
+		return fmt.Errorf("failed to apply command: %w", err)
+	}
+	return nil
+}
+
+// GetPrinters returns a slice of all printers in the FSM.
+func (s *Store) GetPrinters() []Printer {
+	s.fsm.mu.Lock()
+	defer s.fsm.mu.Unlock()
+	printers := make([]Printer, 0, len(s.fsm.printers))
+	for _, p := range s.fsm.printers {
+		printers = append(printers, p)
+	}
+	return printers
 }

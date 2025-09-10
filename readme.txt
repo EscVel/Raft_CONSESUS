@@ -9,3 +9,7 @@ first run go build
 
 cmd /c 'curl.exe -X POST -H "Content-Type: application/json" http://127.0.0.1:8001/join -d "{\"id\": \"node3\", \"addr\": \"127.0.0.1:7003\"}"'
 cmd /c 'curl.exe -X POST -H "Content-Type: application/json" http://127.0.0.1:8001/join -d "{\"id\": \"node2\", \"addr\": \"127.0.0.1:7002\"}"'
+
+cmd /c 'curl.exe http://127.0.0.1:8001/printers'
+
+cmd /c 'curl.exe -L -X POST -H "Content-Type: application/json" http://127.0.0.1:8001/printers -d "{\"id\": \"p2\", \"name\": \"testing\"}"'
